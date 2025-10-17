@@ -1,0 +1,9 @@
+# Solana dependencies
+solders==0.21.0
+solana==0.34.3
+
+# Anthropic Claude AI
+anthropic==0.39.0
+
+# Utilities
+python-dotenv==1.0.1
