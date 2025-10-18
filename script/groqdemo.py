@@ -320,45 +320,100 @@ Return ONLY valid JSON (no markdown, no code blocks):
             return None
     
     async def fetch_all_markets_from_chain(self) -> Dict[int, Dict]:
-        """Fetch ALL markets from blockchain using get_program_accounts"""
+        """Fetch ALL markets from blockchain by trying sequential market IDs"""
         print("🔍 Fetching all markets from blockchain...\n")
         
         try:
-            response = await self.client.get_program_accounts(PROGRAM_ID)
+            # We know from config how many markets exist
+            config_pda, _ = self.find_pda([CONFIG_SEED])
+            config_info = await self.client.get_account_info(config_pda)
+            
+            max_markets = 0
+            if config_info.value:
+                data = config_info.value.data
+                if len(data) >= 48:
+                    max_markets = int.from_bytes(data[40:48], 'little')
+            
+            if max_markets == 0:
+                print("   ℹ️  No markets created yet\n")
+                return {}
+            
+            print(f"   📊 Checking {max_markets} potential markets...")
             
             chain_markets: Dict[int, Dict] = {}
             
-            for account_info in response.value:
-                pubkey = account_info.pubkey
-                data = account_info.account.data
+            # Fetch each market individually
+            for market_id in range(max_markets):
+                try:
+                    market_pda, _ = self.find_pda([MARKET_SEED, self.encode_u64(market_id)])
+                    account_info = await self.client.get_account_info(market_pda)
+                    
+                    if account_info.value and len(account_info.value.data) >= 16:
+                        data = account_info.value.data
+                        
+                        # Verify it's a market account
+                        if data[:8] == MARKET_DISCRIMINATOR:
+                            # Parse basic info
+                            offset = 16  # After discriminator + market_id
+                            offset += 32  # Skip authority
+                            
+                            # Try to parse question (string = 4 bytes length + content)
+                            try:
+                                question_len = int.from_bytes(data[offset:offset+4], 'little')
+                                offset += 4
+                                
+                                if question_len > 0 and question_len < 500:  # Sanity check
+                                    question = data[offset:offset+question_len].decode('utf-8', errors='ignore')
+                                    offset += question_len
+                                else:
+                                    question = f"Market #{market_id}"
+                                    
+                                # Try to parse description
+                                desc_len = int.from_bytes(data[offset:offset+4], 'little')
+                                offset += 4
+                                offset += desc_len  # Skip description
+                                
+                                # Try to parse category
+                                cat_len = int.from_bytes(data[offset:offset+4], 'little')
+                                offset += 4
+                                
+                                if cat_len > 0 and cat_len < 100:
+                                    category = data[offset:offset+cat_len].decode('utf-8', errors='ignore')
+                                    offset += cat_len
+                                else:
+                                    category = "Unknown"
+                                    offset += cat_len
+                                
+                                # Parse resolution_time (i64)
+                                resolution_time = int.from_bytes(data[offset:offset+8], 'little', signed=True)
+                                offset += 8
+                                
+                                # Skip created_at
+                                offset += 8
+                                
+                                # Skip liquidity values
+                                offset += 8 * 5
+                                
+                                # Parse resolved (bool)
+                                resolved = data[offset] == 1
+                                
+                            except Exception:
+                                question = f"Market #{market_id}"
+                                category = "On-Chain"
+                                resolution_time = 0
+                                resolved = False
+                            
+                            chain_markets[market_id] = {
+                                'question': question,
+                                'description': "View on explorer for details",
+                                'category': category,
+                                'resolution_time': resolution_time,
+                                'market_pda': str(market_pda),
+                                'resolved': resolved,
+                            }
                 
-                # Check if this is a Market account (has Market discriminator)
-                if len(data) >= 16 and data[:8] == MARKET_DISCRIMINATOR:
-                    try:
-                        # Parse market_id (comes after discriminator, 8 bytes)
-                        market_id = int.from_bytes(data[8:16], 'little')
-                        
-                        # Parse more data (simplified - skip strings for now)
-                        offset = 16  # After discriminator + market_id
-                        offset += 32  # Skip authority pubkey
-                        
-                        # Skip question, description, category strings
-                        # (Complex to parse without full IDL)
-                        question = f"Market #{market_id}"
-                        category = "On-Chain"
-                        
-                        # We can still get basic info
-                        chain_markets[market_id] = {
-                            'question': question,
-                            'description': "View on explorer for full details",
-                            'category': category,
-                            'resolution_time': 0,
-                            'market_pda': str(pubkey),
-                            'resolved': False,
-                        }
-                        
-                    except Exception as e:
-                        continue
+                except Exception:
+                    continue
             
             print(f"   ✅ Found {len(chain_markets)} markets on-chain\n")
             return chain_markets
@@ -516,7 +571,7 @@ if __name__ == "__main__":
 ║                                                          ║
 ║       🎬 GROQ AI PREDICTION MARKET DEMO BOT 🎬          ║
 ║                                                          ║
-║  💰 Cost: FREE                                          ║
+║  💰 Cost: FREE                                           ║
 ║  ⚡ Speed: Lightning fast                                ║
 ║  🎯 Purpose: MVP Showcase & Demos                        ║
 ║  📡 Now lists ALL markets from blockchain!               ║
